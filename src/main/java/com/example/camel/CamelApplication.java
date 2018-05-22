@@ -1,5 +1,6 @@
 package com.example.camel;
 
+import org.apache.camel.CamelContext;
 import org.apache.camel.RoutesBuilder;
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.component.file.GenericFile;
@@ -14,8 +15,6 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.integration.dsl.IntegrationFlow;
 import org.springframework.integration.dsl.IntegrationFlows;
 import org.springframework.integration.dsl.channel.MessageChannels;
-import org.springframework.integration.dsl.support.GenericHandler;
-import org.springframework.integration.transformer.GenericTransformer;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.stereotype.Component;
 
@@ -27,25 +26,23 @@ import java.io.InputStreamReader;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-// http://camel.apache.org/spring-boot.html
-
 @SpringBootApplication
 public class CamelApplication {
 
-		public static void main(String[] args) {
-				SpringApplication.run(CamelApplication.class, args);
-		}
-}
+		private final CamelContext camelContext;
 
-@Configuration
-class CamelJmsConfiguration   /*, CamelContextAware*/ {
+		public CamelApplication(CamelContext camelContext) {
+				this.camelContext = camelContext;
+//				this.camelContext.addComponent("my-jms", JmsComponent.jmsComponent(cf));
+		}
+
 
 		@Component
-		static class MyJmsComponentCustomizer implements ComponentCustomizer<JmsComponent> {
+		static class DefaultJmsComponentCustomizer implements ComponentCustomizer<JmsComponent> {
 
-				private final javax.jms.ConnectionFactory connectionFactory;
+				private final ConnectionFactory connectionFactory;
 
-				public MyJmsComponentCustomizer(ConnectionFactory connectionFactory) {
+				DefaultJmsComponentCustomizer(ConnectionFactory connectionFactory) {
 						this.connectionFactory = connectionFactory;
 				}
 
@@ -55,41 +52,62 @@ class CamelJmsConfiguration   /*, CamelContextAware*/ {
 				}
 		}
 
+
 		@Bean
-		RoutesBuilder myRouter() {
+		RoutesBuilder routes() {
 				return new RouteBuilder() {
 
 						@Override
-						public void configure() {
+						public void configure() throws Exception {
 
-								// http://camel.apache.org/components.html
+								from("file://{{user.home}}/Desktop/in")
+									.routeId("in-to-out")
+									.to("file://{{user.home}}/Desktop/out?autoCreate=false");
 
-								from("file:{{user.home}}/Desktop/to-si")
-									.routeId("files-to-si")
-									.to("spring-integration:incoming");
-
-								from("file:{{user.home}}/Desktop/to-jms")
-									.routeId("files-to-amq")
+								from("file://{{user.home}}/Desktop/to-jms")
+									.routeId("file-to-jms")
 									.transform()
 									.body(GenericFile.class, gf -> {
-											try (BufferedReader in = new BufferedReader(new InputStreamReader(
-												new FileInputStream(File.class.cast(gf.getFile()))))) {
+											File actualFile = File.class.cast(gf.getFile());
+											try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(actualFile)))) {
 													return in.lines().collect(Collectors.joining());
 											}
 											catch (Exception e) {
 													throw new RuntimeException(e);
 											}
 									})
-									.to("jms:queue:files");
+									.process()
+									.body(String.class, string -> LogFactory.getLog(CamelApplication.this.getClass()).info("the string body is " + string))
+									/*.exchange(exchange -> {
+											Message in = exchange.getIn();
+											String body = in.getBody(String.class);
+											LogFactory.getLog(getClass()).info("body is " + body);
+									})*/
+									//@formatter:off
+									.choice()
+											.when(exchange -> exchange.getIn().getBody(String.class).contains("hello"))
+											.to("jms:queue:hello")
+									.otherwise()
+											.to("jms:queue:files")
+									.endChoice();
+									//@formatter:on
+
+								from("jms:queue:hello")
+									.to("spring-integration:incoming");
 
 								from("jms:queue:files")
 									.routeId("jms-to-file")
-									.setHeader("CamelFileName", () -> UUID.randomUUID().toString() + ".txt")
+									.setHeader("CamelFIleName", () -> UUID.randomUUID().toString() + ".txt")
 									.to("file://{{user.home}}/Desktop/from-jms");
 						}
 				};
 		}
+
+		public static void main(String[] args) {
+				SpringApplication.run(CamelApplication.class, args);
+		}
 }
+
 
 @Configuration
 class IntegrationFlowConfiguration {
@@ -100,15 +118,15 @@ class IntegrationFlowConfiguration {
 		}
 
 		@Bean
-		IntegrationFlow process() {
+		IntegrationFlow flow() {
 				Log log = LogFactory.getLog(getClass());
 				return IntegrationFlows
-					.from(incoming())
-					.transform((GenericTransformer<GenericFile, File>) file -> File.class.cast(file.getFile()))
-					.handle((GenericHandler<File>) (file, headers) -> {
-							log.info("spring integration handler: " + file.getAbsolutePath());
+					.from(this.incoming())
+					.handle((o, map) -> {
+							log.info("new message! " + o.toString());
 							return null;
 					})
 					.get();
 		}
+
 }
