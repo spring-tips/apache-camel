@@ -1,6 +1,8 @@
 package com.example.camel;
 
 import org.apache.camel.CamelContext;
+import org.apache.camel.Exchange;
+import org.apache.camel.LoggingLevel;
 import org.apache.camel.RoutesBuilder;
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.component.file.GenericFile;
@@ -8,6 +10,8 @@ import org.apache.camel.component.jms.JmsComponent;
 import org.apache.camel.spi.ComponentCustomizer;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
@@ -30,8 +34,9 @@ import java.util.stream.Collectors;
 public class CamelApplication {
 
 		private final CamelContext camelContext;
+	private final Logger logger = LoggerFactory.getLogger(CamelApplication.this.getClass());
 
-		public CamelApplication(CamelContext camelContext) {
+	public CamelApplication(CamelContext camelContext) {
 				this.camelContext = camelContext;
 //				this.camelContext.addComponent("my-jms", JmsComponent.jmsComponent(cf));
 		}
@@ -58,7 +63,7 @@ public class CamelApplication {
 				return new RouteBuilder() {
 
 						@Override
-						public void configure() throws Exception {
+						public void configure() {
 
 								from("file://{{user.home}}/Desktop/in")
 									.routeId("in-to-out")
@@ -66,28 +71,13 @@ public class CamelApplication {
 
 								from("file://{{user.home}}/Desktop/to-jms")
 									.routeId("file-to-jms")
-									.transform()
-									.body(GenericFile.class, gf -> {
-											File actualFile = File.class.cast(gf.getFile());
-											try (BufferedReader in = new BufferedReader(new InputStreamReader(new FileInputStream(actualFile)))) {
-													return in.lines().collect(Collectors.joining());
-											}
-											catch (Exception e) {
-													throw new RuntimeException(e);
-											}
-									})
-									.process()
-									.body(String.class, string -> LogFactory.getLog(CamelApplication.this.getClass()).info("the string body is " + string))
-									/*.exchange(exchange -> {
-											Message in = exchange.getIn();
-											String body = in.getBody(String.class);
-											LogFactory.getLog(getClass()).info("body is " + body);
-									})*/
+									.convertBodyTo(String.class)
+									.log(LoggingLevel.INFO, logger, "the string body is ${body}")
 									//@formatter:off
 									.choice()
-											.when(exchange -> exchange.getIn().getBody(String.class).contains("hello"))
+										.when(body().contains("hello"))
 											.to("jms:queue:hello")
-									.otherwise()
+										.otherwise()
 											.to("jms:queue:files")
 									.endChoice();
 									//@formatter:on
@@ -97,7 +87,7 @@ public class CamelApplication {
 
 								from("jms:queue:files")
 									.routeId("jms-to-file")
-									.setHeader("CamelFIleName", () -> UUID.randomUUID().toString() + ".txt")
+									.setHeader(Exchange.FILE_NAME, () -> UUID.randomUUID().toString() + ".txt")
 									.to("file://{{user.home}}/Desktop/from-jms");
 						}
 				};
